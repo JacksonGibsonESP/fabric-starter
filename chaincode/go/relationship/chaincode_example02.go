@@ -1,15 +1,11 @@
 package main
 
 import (
-	"bytes"
-	"crypto/x509"
 	"encoding/json"
-	"encoding/pem"
 	"github.com/hyperledger/fabric/core/chaincode/lib/cid"
 	"github.com/hyperledger/fabric/core/chaincode/shim"
 	pb "github.com/hyperledger/fabric/protos/peer"
 	"strconv"
-	"strings"
 )
 
 var logger = shim.NewLogger("Dealer")
@@ -27,6 +23,11 @@ type Car struct {
 	Reason     string `json:"reason"`
 }
 
+type Item struct {
+	Key    string `json:"Key"`
+	Record Car    `json:"Record"`
+}
+
 func (t *DealerChaincode) Init(stub shim.ChaincodeStubInterface) pb.Response {
 	logger.Debug("Init")
 	return shim.Success(nil)
@@ -34,16 +35,6 @@ func (t *DealerChaincode) Init(stub shim.ChaincodeStubInterface) pb.Response {
 
 func (t *DealerChaincode) Invoke(stub shim.ChaincodeStubInterface) pb.Response {
 	logger.Debug("Invoke")
-
-	creatorBytes, err := stub.GetCreator()
-	if err != nil {
-		logger.Debug("Creator detection error: ", err.Error())
-		return shim.Error(err.Error())
-	}
-
-	name, org := getCreator(creatorBytes)
-
-	logger.Debug("transaction creator " + name + "@" + org)
 
 	mspid, err := cid.GetMSPID(stub)
 	if err != nil {
@@ -63,8 +54,6 @@ func (t *DealerChaincode) Invoke(stub shim.ChaincodeStubInterface) pb.Response {
 		return t.helloWorld()
 	} else if function == "checkMSP" {
 		return t.checkMSP(stub)
-	} else if function == "checkORG" {
-		return t.checkORG(stub, org)
 	}
 
 	logger.Debug("MSP: ", mspid)
@@ -169,37 +158,37 @@ func (s *DealerChaincode) queryAllCars(stub shim.ChaincodeStubInterface) pb.Resp
 	}
 	defer resultsIterator.Close()
 
-	// buffer is a JSON array containing QueryResults
-	var buffer bytes.Buffer
-	buffer.WriteString("[")
+	l := []Item{}
 
-	bArrayMemberAlreadyWritten := false
 	for resultsIterator.HasNext() {
 		queryResponse, err := resultsIterator.Next()
 		if err != nil {
 			logger.Debug("Error: ", err.Error())
 			return shim.Error(err.Error())
 		}
-		// Add a comma before array members, suppress it for the first array member
-		if bArrayMemberAlreadyWritten == true {
-			buffer.WriteString(",")
+
+		car := Car{}
+
+		json.Unmarshal(queryResponse.Value, &car)
+
+		item := Item{
+			queryResponse.Key,
+			car,
 		}
-		buffer.WriteString("{\"Key\":")
-		buffer.WriteString("\"")
-		buffer.WriteString(queryResponse.Key)
-		buffer.WriteString("\"")
 
-		buffer.WriteString(", \"Record\":")
-		// Record is a JSON object, so we write as-is
-		buffer.WriteString(string(queryResponse.Value))
-		buffer.WriteString("}")
-		bArrayMemberAlreadyWritten = true
+		l = append(l, item)
 	}
-	buffer.WriteString("]")
 
-	logger.Debug("All cars in ledger:\n%s\n", buffer.String())
+	lAsBytes, err := json.Marshal(l)
 
-	return shim.Success(buffer.Bytes())
+	if err != nil {
+		logger.Debug("Marshalling error. ", err.Error())
+		return shim.Error(err.Error())
+	}
+
+	logger.Debug("All cars in ledger:", string(lAsBytes))
+
+	return shim.Success(lAsBytes)
 }
 
 func (s *DealerChaincode) changeCarOwner(stub shim.ChaincodeStubInterface, args []string) pb.Response {
@@ -277,27 +266,9 @@ func (t *DealerChaincode) checkMSP(stub shim.ChaincodeStubInterface) pb.Response
 	return shim.Success([]byte(mspid))
 }
 
-func (t *DealerChaincode) checkORG(stub shim.ChaincodeStubInterface, org string) pb.Response {
-	logger.Debug("Check ORG called. ORG: ", org)
-	return shim.Success([]byte(org))
-}
-
 func (t *DealerChaincode) helloWorld() pb.Response {
 	logger.Debug("Hello world called")
 	return shim.Success([]byte("Hello world!"))
-}
-
-var getCreator = func(certificate []byte) (string, string) {
-	data := certificate[strings.Index(string(certificate), "-----") : strings.LastIndex(string(certificate), "-----")+5]
-	block, _ := pem.Decode([]byte(data))
-	cert, _ := x509.ParseCertificate(block.Bytes)
-	organization := cert.Issuer.Organization[0]
-	commonName := cert.Subject.CommonName
-	logger.Debug("commonName: " + commonName + ", organization: " + organization)
-
-	organizationShort := strings.Split(organization, ".")[0]
-
-	return commonName, organizationShort
 }
 
 func main() {
